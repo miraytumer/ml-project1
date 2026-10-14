@@ -1,134 +1,196 @@
 """
 Preprocessing for the BRFSS heart-disease data (CS-433 Project 1).
 
-Goal: turn the raw 321-column survey matrix into a clean numeric matrix
-(49 columns with the CORE set) that a linear model can learn from.
+    x_train, x_test, y_train, train_ids, test_ids, names = load_data("dataset/")
+    tX_train, tX_test, p = prepare(x_train, x_test, names)
 
-USAGE
-    x_train, x_test, y_train, train_ids, test_ids, names = load_data("data/")
-    Xc_train = clean(x_train, names)        # fixed rules, same for everyone
-    p        = fit(Xc_train)                # statistics from TRAINING data only
-    tX_train = transform(Xc_train, p)       # final matrix (bias column first)
-    tX_test  = transform(clean(x_test, names), p)
+clean()      fixed rules (same for everyone): drop admin / leakage / redundant columns, fill
+             missing values whose meaning is known, survey codes -> NaN ("none" 88 -> 0).
+fit()        DECIDES what to do, from the TRAINING data only: which columns to keep, which to
+             one-hot, clip values, medians, means and stds for standardization.
+transform()  DOES it, on any data (train, validation, test), and adds a bias column.
+The split guarantees that validation/test data never influence the statistics.
 
-STAGE 1 - clean(): fixed codebook rules, nothing learned from data
-    1. Keep only the CORE features (32 of 321). We dropped:
-       survey admin/weights (describe the phone call, not the person),
-       leakage (questions only asked to heart patients, e.g. HAREHAB1),
-       features >50% missing (optional survey modules),
-       duplicates (kept one version per concept, e.g. _AGE80 not _AGEG5YR),
-       weak features (eta^2 < 0.01: heart-disease rate barely differs between answers).
-    2. Fix special codes. The survey stores "don't know / refused" as numbers
-       (7, 9, 77, 99, 99900...). Left as numbers, the model would read them as
-       extreme answers, so they become NaN (CODES_TO_NAN).
-    3. Two codes are real answers, not unknowns:
-       PHYSHLTH 88 = "no bad days" -> 0
-       BPMEDS missing = only asked if high blood pressure -> "no" (2)
-       (checked in data: all missing BPMEDS have no high BP)
-
-STAGE 2 - fit() learns, transform() applies (prevents data leakage)
-    fit() computes statistics on training data only; transform() applies the
-    SAME statistics to train, validation and test. If validation/test rows
-    influenced these statistics, our scores would be too optimistic.
-    In cross-validation, fit() is re-run on each fold's training part.
-
-    Steps (done in _expand, then standardized in transform):
-    1. Clip heavy tails (CLIP) at the training 99th percentile:
-       max values like 150 fruit servings/day are data-entry errors.
-    2. Missing indicators (MISSING_IND): 0/1 column "was missing", added BEFORE
-       imputing, because here missingness means something
-       (_HCVU651 missing = age 65+, _RFCHOL missing = never checked, _INCOMG = refused).
-    3. One-hot encode unordered categories (ONE_HOT), e.g. EMPLOY1 7 ("retired")
-       is not "more" than 6 ("student"). Missing -> all zeros.
-       First category dropped: with a bias column the full set is redundant
-       and makes least squares singular.
-    4. Fill remaining NaN with the training median (robust to outliers).
-    5. Standardize every column (mean 0, std 1): features have very different
-       scales (age 18-80, binary 1/2, drinks 0-2800); this makes gradient
-       descent stable and regularization fair across features.
-    6. Add a bias column of ones (lets the model learn the base rate, ~8.8%).
-
-All choices (feature list, thresholds) are in the lists below so they can be
-changed for ablation experiments without touching the logic.
+How the drop lists were built (see EDA):
+  ADMIN      survey bookkeeping (dates, ids, phone screening, sampling weights).
+  LEAKAGE    questions that reveal the label: everyone who answered HAREHAB1 (cardiac rehab)
+             has heart disease (checked: 100%).
+  REDUNDANT  another version of a concept we keep. The CDC provides cleaned "_" variables
+             computed from the raw answers; we keep one version per concept (usually the "_"
+             one, except GENHLTH whose 1-5 scale is richer than _RFHLTH). Pairs were found from
+             the codebook and confirmed in the data by correlation (e.g. _LMTACT1=3 and
+             _LMTWRK1=3 were identical, which broke least squares).
 """
-
-
-
+import os
 import numpy as np
+from helpers import load_csv_data
 
-CORE = ["_RFHYPE5","BPMEDS","_RFCHOL","_CHOLCHK","_ASTHMS1","_DRDXAR1","_HCVU651",
-        "CVDSTRK3","CHCCOPD1","DIABETE3","GENHLTH","PHYSHLTH","DIFFWALK","USEEQUIP","QLACTLM2",
-        "_AGE80","SEX","_RACEGR3","_EDUCAG","_INCOMG","_CHLDCNT","EMPLOY1","_BMI5",
-        "_SMOKER3","_DRNKWEK","_RFBING5","_FRUTSUM","_VEGESUM","_PACAT1","_PASTRNG",
-        "_LMTACT1","_LMTWRK1"]
+# ---------------- decisions (from the EDA) ----------------
 
-CODES_TO_NAN = {
-    **{n: [9] for n in ["_RFHYPE5","_RFCHOL","_CHOLCHK","_ASTHMS1","_HCVU651","_RACEGR3",
-                        "_EDUCAG","_INCOMG","_CHLDCNT","_SMOKER3","_RFBING5","_PACAT1",
-                        "_PASTRNG","_LMTACT1","_LMTWRK1","EMPLOY1"]},
-    **{n: [7, 9] for n in ["BPMEDS","CVDSTRK3","CHCCOPD1","DIABETE3","GENHLTH",
-                           "DIFFWALK","USEEQUIP","QLACTLM2"]},
-    "_DRNKWEK": [99900],
-    "PHYSHLTH": [77, 99],
-}
+# survey bookkeeping: describes the phone call, not the person
+ADMIN = [
+    "_STATE", "FMONTH", "IDATE", "IMONTH", "IDAY", "IYEAR", "DISPCODE", "SEQNO", "_PSU",
+    "CTELENUM", "PVTRESD1", "COLGHOUS", "STATERES", "CELLFON3", "LADULT", "NUMADULT",
+    "NUMMEN", "NUMWOMEN", "CTELNUM1", "CELLFON2", "CADULT", "PVTRESD2", "CCLGHOUS",
+    "CSTATE", "LANDLINE", "HHADULT", "QSTVER", "QSTLANG",
+    "_STSTR", "_STRWT", "_RAWRAKE", "_WT2RAKE", "_CLLCPWT", "_DUALUSE", "_DUALCOR", "_LLCPWT",
+    "_CHISPNC", "_CRACE1", "_CPRACE",
+]
 
-ONE_HOT = ["EMPLOY1", "DIABETE3", "_RACEGR3", "_LMTACT1", "_LMTWRK1"]
+# reveal the label: HAREHAB1 (cardiac rehab) is answered only by heart patients (100% positive)
+LEAKAGE = ["HAREHAB1", "CVDINFR4", "CVDCRHD4"]
+
+# another version of a concept we already keep (we keep the cleaned "_" variable)
+REDUNDANT = [
+    "_AGEG5YR", "_AGE_G", "_AGE65YR", "FC60_", "MAXVO2_",                      # age
+    "_RFHLTH", "BPHIGH4", "TOLDHI2", "CHOLCHK", "DIABAGE2",                    # health
+    "HAVARTH3", "_DRDXAR1", "_LMTWRK1", "_LMTSCL1",                            # arthritis
+    "_PRACE1", "_MRACE1", "_HISPANC", "_RACE", "_RACEG21", "_RACE_G1",         # race
+    "HTIN4", "HTM4", "WTKG3", "_BMI5CAT", "_RFBMI5", "WEIGHT2", "HEIGHT3",     # BMI
+    "_RFSMOK3", "SMOKE100", "SMOKDAY2",                                        # smoking
+    "_RFDRHV5", "ALCDAY5", "AVEDRNK2", "MAXDRNKS", "DRNK3GE5",                 # alcohol
+    "INCOME2", "EDUCA", "CHILDREN",                                            # demographics
+    "_LTASTH1", "_CASTHM1", "ASTHMA3", "ASTHNOW",                              # asthma
+    "_MISFRTN", "_MISVEGN", "_FRTRESP", "_VEGRESP", "_FRTLT1", "_VEGLT1", "_FRT16", "_VEG23",
+    "_FRUITEX", "_VEGETEX", "FRUITJU1", "FRUIT1", "FVBEANS", "FVGREEN", "FVORANG", "VEGETAB1",
+    "_TOTINDA", "_MINAC11", "_MINAC21", "_PAINDX1", "_PA150R2", "_PA300R2", "_PA30021",
+    "_PAREC1", "_PASTAE1", "EXERANY2", "EXRACT11", "EXRACT21",
+    "STRENGTH", "EXEROFT1", "EXEROFT2", "EXERHMM1", "EXERHMM2",               # odd encodings
+    "_AIDTST3", "BLOODCHO",          # exact copies of HIVTST6 and _CHOLCHK=3 (|r| > 0.99)
+]
+
+# survey codes: a value from SPECIAL is a code only if it lies above all normal values
+SPECIAL = {7, 8, 9, 77, 88, 99, 777, 888, 999, 7777, 8888, 9999, 99900}
+ZERO_CODES = {88, 888}                                    # "none" -> 0
+CODE_EXCEPTIONS = {"EMPLOY1": [9],      # 7 = retired, 8 = unable to work are real answers
+                   "CHECKUP1": [7, 9]}  # 8 = never had a checkup is a real answer
+
+STRUCTURAL_FILLS = {"BPMEDS": 2,     # only asked if high blood pressure -> missing = "no"
+                    "POORHLTH": 0}   # only asked if bad days > 0 -> missing = 0 days
+MISSING_INDICATORS = ["_HCVU651", "_RFCHOL", "_INCOMG"]
+
+MAX_MISSING = 0.5        # drop a column if >50% missing: in the EDA features were either nearly
+                         # complete or mostly missing (optional survey modules), with a gap between
+MAX_LEVELS = 10          # 3 to 10 distinct values = a category or short scale -> one-hot encode
+CLIP_PCT = 99            # clip continuous columns at the 99th percentile: the max values were
+                         # data-entry errors (e.g. 150 fruit servings a day)
+CONTINUOUS_LEVELS = 16   # only columns with >= 16 distinct values count as continuous (clipped)
 
 
-def clean(X, feature_names, features=CORE):
-    """Select features and apply fixed codebook rules."""
-    idx = {n: i for i, n in enumerate(feature_names)}
-    Xc = X[:, [idx[n] for n in features]].copy()
-    col = {n: j for j, n in enumerate(features)}
+# ---------------- loading ----------------
 
-    if "BPMEDS" in col:                      # only asked if high BP -> missing means "no"
-        j = col["BPMEDS"]; Xc[np.isnan(Xc[:, j]), j] = 2
-    if "PHYSHLTH" in col:                    # 88 = "none" = 0 days
-        j = col["PHYSHLTH"]; Xc[Xc[:, j] == 88, j] = 0
-    for n, codes in CODES_TO_NAN.items():
-        if n in col:
-            j = col[n]; Xc[np.isin(Xc[:, j], codes), j] = np.nan
-    return Xc
-
-MISSING_IND = ["_HCVU651", "_RFCHOL", "_INCOMG"]   # missingness carries information
-CLIP = ["_DRNKWEK", "_FRUTSUM", "_VEGESUM", "_BMI5"]
+def load_data(data_dir="data/"):
+    """Load the CSVs once, then from the cache data/cache.npz (about a second)."""
+    cache = os.path.join(data_dir, "cache.npz")
+    if not os.path.exists(cache):
+        x_train, x_test, y_train, train_ids, test_ids = load_csv_data(data_dir)
+        with open(os.path.join(data_dir, "x_train.csv")) as f:
+            names = np.array(f.readline().strip().split(",")[1:])
+        np.savez(cache, x_train=x_train, x_test=x_test, y_train=y_train,
+                 train_ids=train_ids, test_ids=test_ids, feature_names=names)
+    d = np.load(cache)
+    return (d["x_train"], d["x_test"], d["y_train"], d["train_ids"], d["test_ids"],
+            [str(n) for n in d["feature_names"]])
 
 
-def _expand(Xc, p, features):
-    """Clip, add missing indicators, one-hot categoricals, median-impute numerics."""
-    col = {n: j for j, n in enumerate(features)}
-    Xc = Xc.copy()
-    for n in CLIP:                                   # NaN stays NaN under np.minimum
-        j = col[n]; Xc[:, j] = np.minimum(Xc[:, j], p["clip"][n])
+# ---------------- stage 1: fixed rules ----------------
 
-    indicators = [np.isnan(Xc[:, col[n]]).astype(float) for n in MISSING_IND]
+def detect_codes(col):
+    """Values of SPECIAL that lie above every normal value of the column."""
+    values = np.unique(col[~np.isnan(col)])
+    normal = values[~np.isin(values, list(SPECIAL))]
+    return [v for v in values if v in SPECIAL and len(normal) and v > normal.max()]
 
-    parts = []
-    for n in features:
-        j = col[n]
-        if n in ONE_HOT:                             # missing -> all zeros; first category dropped
-            parts += [(Xc[:, j] == v).astype(float) for v in p["cats"][n][1:]]
+
+def clean(X, names):
+    """Drop admin / leakage / redundant columns, structural fills, codes -> NaN (or 0)."""
+    drop = set(ADMIN) | set(LEAKAGE) | set(REDUNDANT)
+    kept = [n for n in names if n not in drop]
+    Xc = X[:, [names.index(n) for n in kept]].copy()
+    for j, n in enumerate(kept):
+        x = Xc[:, j]                                   # view: edits change Xc
+        if n in STRUCTURAL_FILLS:
+            x[np.isnan(x)] = STRUCTURAL_FILLS[n]
+        for c in CODE_EXCEPTIONS.get(n, detect_codes(x)):
+            x[x == c] = 0.0 if c in ZERO_CODES else np.nan
+    return Xc, kept
+
+
+# ---------------- stage 2: learn on train, apply anywhere ----------------
+
+def _build(Xc, names, p):
+    """One-hot, clip, median-fill and missing indicators, using the statistics in p."""
+    c = {n: j for j, n in enumerate(names)}
+    blocks, cols = [], []
+    for n in p["cols"]:
+        x = Xc[:, c[n]]
+        if n in p["onehot"]:                           # missing -> all zeros
+            blocks += [(x == v).astype(float) for v in p["onehot"][n]]
+            cols += [f"{n}={v:g}" for v in p["onehot"][n]]
         else:
-            c = Xc[:, j]
-            parts.append(np.where(np.isnan(c), p["median"][j], c))
-    return np.column_stack(parts + indicators)
+            if n in p["clip"]:
+                x = np.minimum(x, p["clip"][n])
+            blocks.append(np.where(np.isnan(x), p["median"][n], x))
+            cols.append(n)
+    for n in p["indicators"]:
+        blocks.append(np.isnan(Xc[:, c[n]]).astype(float))
+        cols.append(f"{n}_missing")
+    return np.column_stack(blocks), cols
 
 
-def fit(Xc, features=CORE):
-    """Learn all statistics from TRAINING data only."""
-    col = {n: j for j, n in enumerate(features)}
-    p = {
-        "clip":   {n: np.nanpercentile(Xc[:, col[n]], 99) for n in CLIP},
-        "median": np.nanmedian(Xc, axis=0),
-        "cats":   {n: np.unique(Xc[~np.isnan(Xc[:, col[n]]), col[n]]) for n in ONE_HOT},
-    }
-    Z = _expand(Xc, p, features)
+def fit(Xc, names):
+    """Decide everything from the cleaned TRAINING data; transform() applies it."""
+    missing = np.isnan(Xc).mean(axis=0)
+    cols = [n for j, n in enumerate(names) if missing[j] <= MAX_MISSING]
+    p = {"cols": cols, "indicators": [n for n in MISSING_INDICATORS if n in cols],
+         "onehot": {}, "clip": {}, "median": {}}
+    for n in cols:
+        x = Xc[:, names.index(n)]
+        x = x[~np.isnan(x)]
+        levels = np.unique(x)
+        if 3 <= len(levels) <= MAX_LEVELS:
+            p["onehot"][n] = levels[1:]                # first level dropped (bias column)
+        else:
+            if len(levels) >= CONTINUOUS_LEVELS:
+                p["clip"][n] = float(np.percentile(x, CLIP_PCT))
+                x = np.minimum(x, p["clip"][n])
+            p["median"][n] = float(np.median(x))
+    Z, cols = _build(Xc, names, p)
+    p["columns"] = ["bias"] + cols
     p["mean"], p["std"] = Z.mean(axis=0), Z.std(axis=0)
-    p["std"][p["std"] == 0] = 1.0
+    p["std"][p["std"] == 0] = 1.0                      # safety: constant column
     return p
 
 
-def transform(Xc, p, features=CORE):
-    """Apply learned statistics, standardize, add bias column."""
-    Z = (_expand(Xc, p, features) - p["mean"]) / p["std"]
+def transform(Xc, names, p):
+    """Apply the learned statistics, standardize, add the bias column."""
+    Z, _ = _build(Xc, names, p)
+    Z = (Z - p["mean"]) / p["std"]
     return np.column_stack([np.ones(len(Z)), Z])
+
+
+def prepare(x_train, x_test, names):
+    """clean + fit on train + transform both. Returns (tX_train, tX_test, p)."""
+    Xc_tr, kept = clean(x_train, names)
+    Xc_te, _ = clean(x_test, names)
+    p = fit(Xc_tr, kept)
+    return transform(Xc_tr, kept, p), transform(Xc_te, kept, p), p
+
+
+# ---------------- pairwise interactions (final model) ----------------
+
+def fit_pairs(tX_train, w, K=15):
+    """Pairwise products (squares included) of the K columns with the largest |w|,
+    scaled with TRAINING statistics. K=15 -> 120 new columns."""
+    top = np.argsort(-np.abs(w[1:]))[:K] + 1           # skip the bias
+    pairs = [(a, b) for k, a in enumerate(top) for b in top[k:]]
+    P = np.column_stack([tX_train[:, a] * tX_train[:, b] for a, b in pairs])
+    mu, sd = P.mean(axis=0), P.std(axis=0)
+    sd[sd == 0] = 1.0
+    return {"pairs": pairs, "mean": mu, "std": sd}
+
+
+def add_pairs(tX, pp):
+    """Append the standardized pairwise products learned by fit_pairs."""
+    P = np.column_stack([tX[:, a] * tX[:, b] for a, b in pp["pairs"]])
+    return np.column_stack([tX, (P - pp["mean"]) / pp["std"]])
