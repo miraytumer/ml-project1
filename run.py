@@ -20,7 +20,7 @@ K_PAIRS = 15  # number of strongest columns whose pairwise products are added
 
 def main():
     # 1. data
-    x_train, x_test, y_train, train_ids, test_ids, names = load_data("dataset/")
+    x_train, x_test, y_train, train_ids, test_ids, names = load_data("data/")
 
     # 2. preprocessing: all features except admin / leakage / redundant; statistics learned
     #    on the full training set, applied to both sets

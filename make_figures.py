@@ -1,5 +1,5 @@
 """
-Makes the figures of the report:  python make_figures.py  (about 6 minutes)
+Makes the figures of the report:  python make_figures.py
 
 results/fig_missing.pdf    fraction of missing values per feature (raw data)
 results/fig_threshold.pdf  F1 as a function of the decision threshold (one 80/20 split)
@@ -23,7 +23,7 @@ plt.rcParams.update(
         "grid.linewidth": 0.5,
     }
 )
-SIZE = (3.4, 2.1)  # one column of the IEEE two-column template, in inches
+SIZE = (3.4, 2.1)  
 
 
 def missing_figure(x):
@@ -104,7 +104,7 @@ def lambda_figure(Xc, names, y):
 
 if __name__ == "__main__":
     os.makedirs("results", exist_ok=True)
-    x_train, x_test, y_train, train_ids, test_ids, names = load_data("dataset/")
+    x_train, x_test, y_train, train_ids, test_ids, names = load_data("data/")
     missing_figure(x_train)
     Xc, kept = clean(x_train, names)
     threshold_figure(Xc, kept, y_train)

@@ -5,7 +5,7 @@ Cross-validated F1: 0.429. AIcrowd F1: 0.442.
 
 ## Run
 
-Put `x_train.csv`, `y_train.csv` and `x_test.csv` in `dataset/`, then from the repository root:
+Put `x_train.csv`, `y_train.csv` and `x_test.csv` in `data/`, then from the repository root:
 
 ```
 python run.py           # writes submission.csv (our final submission)

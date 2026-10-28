@@ -1,7 +1,7 @@
 """
 Preprocessing for the BRFSS heart-disease data (CS-433 Project 1).
 
-    x_train, x_test, y_train, train_ids, test_ids, names = load_data("dataset/")
+    x_train, x_test, y_train, train_ids, test_ids, names = load_data("data/")
     tX_train, tX_test, p = prepare(x_train, x_test, names)
 
 clean()      fixed rules (same for everyone): drop admin / leakage / redundant columns, fill
