@@ -5,6 +5,7 @@ results/fig_missing.pdf    fraction of missing values per feature (raw data)
 results/fig_threshold.pdf  F1 as a function of the decision threshold (one 80/20 split)
 results/fig_lambda.pdf     train and validation F1 as a function of lambda (5-fold CV)
 """
+
 import os
 import numpy as np
 import matplotlib.pyplot as plt
@@ -12,8 +13,16 @@ from preprocessing import load_data, clean, fit, transform
 from cv import cross_validate, f1_score, make_logreg
 
 BLUE, ORANGE, GRAY = "#2a78d6", "#eb6834", "#8a8a85"
-plt.rcParams.update({"font.size": 8, "axes.spines.top": False, "axes.spines.right": False,
-                     "axes.grid": True, "grid.color": "#e6e6e3", "grid.linewidth": 0.5})
+plt.rcParams.update(
+    {
+        "font.size": 8,
+        "axes.spines.top": False,
+        "axes.spines.right": False,
+        "axes.grid": True,
+        "grid.color": "#e6e6e3",
+        "grid.linewidth": 0.5,
+    }
+)
 SIZE = (3.4, 2.1)  # one column of the IEEE two-column template, in inches
 
 
@@ -34,7 +43,7 @@ def missing_figure(x):
 def threshold_figure(Xc, names, y):
     """F1 on a held-out 20% for every threshold on the predicted probability."""
     perm = np.random.default_rng(0).permutation(len(y))
-    va, tr = perm[: len(y) // 5], perm[len(y) // 5:]
+    va, tr = perm[: len(y) // 5], perm[len(y) // 5 :]
     p = fit(Xc[tr], names)
     A, B = transform(Xc[tr], names, p), transform(Xc[va], names, p)
     w = make_logreg()(y[tr], A)
@@ -50,13 +59,20 @@ def threshold_figure(Xc, names, y):
     plt.axvline(0.5, color=GRAY, ls="--", lw=0.8)
     plt.axvline(t_best, color=GRAY, ls=":", lw=0.8)
     plt.text(0.51, f1_half + 0.03, f"default 0.5\nF1 = {f1_half:.2f}", fontsize=7)
-    plt.text(t_best + 0.02, f1_best + 0.01, f"best {t_best:.2f}, F1 = {f1_best:.2f}", fontsize=7)
+    plt.text(
+        t_best + 0.02,
+        f1_best + 0.01,
+        f"best {t_best:.2f}, F1 = {f1_best:.2f}",
+        fontsize=7,
+    )
     plt.xlabel("decision threshold on predicted probability")
     plt.ylabel("validation F1")
     plt.ylim(0, f1_best + 0.08)
     plt.tight_layout()
     plt.savefig("results/fig_threshold.pdf")
-    print(f"threshold 0.5: F1 {f1_half:.3f}   best threshold {t_best:.2f}: F1 {f1_best:.3f}")
+    print(
+        f"threshold 0.5: F1 {f1_half:.3f}   best threshold {t_best:.2f}: F1 {f1_best:.3f}"
+    )
 
 
 def lambda_figure(Xc, names, y):
@@ -66,8 +82,17 @@ def lambda_figure(Xc, names, y):
 
     plt.figure(figsize=SIZE)
     plt.semilogx(lambdas, res[:, 2], "o-", color=ORANGE, lw=1.6, ms=3.5, label="train")
-    plt.errorbar(lambdas, res[:, 0], yerr=res[:, 1], fmt="o-", color=BLUE, lw=1.6, ms=3.5,
-                 capsize=2, label="validation (± std over 5 folds)")
+    plt.errorbar(
+        lambdas,
+        res[:, 0],
+        yerr=res[:, 1],
+        fmt="o-",
+        color=BLUE,
+        lw=1.6,
+        ms=3.5,
+        capsize=2,
+        label="validation (± std over 5 folds)",
+    )
     plt.xlabel(r"regularization $\lambda$")
     plt.ylabel("F1")
     plt.legend(frameon=False, loc="lower left")

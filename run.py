@@ -5,6 +5,7 @@ weights in a first model (120 extra columns). Decision threshold chosen to maxim
 training data.
 5-fold cross-validated F1: 0.429 +- 0.003. AIcrowd F1: 0.442.
 """
+
 import numpy as np
 from helpers import create_csv_submission
 from preprocessing import load_data, prepare, fit_pairs, add_pairs
@@ -14,7 +15,7 @@ from cv import make_logreg, best_threshold, predict
 LAMBDA = 1e-4
 MAX_ITERS = 500
 GAMMA = 0.5
-K_PAIRS = 15          # number of strongest columns whose pairwise products are added
+K_PAIRS = 15  # number of strongest columns whose pairwise products are added
 
 
 def main():
@@ -30,7 +31,9 @@ def main():
     w0 = train(y_train, tX_train)
     pp = fit_pairs(tX_train, w0, K_PAIRS)
     A, B = add_pairs(tX_train, pp), add_pairs(tX_test, pp)
-    print(f"preprocessed: {tX_train.shape[1]} columns + {len(pp['pairs'])} interactions")
+    print(
+        f"preprocessed: {tX_train.shape[1]} columns + {len(pp['pairs'])} interactions"
+    )
 
     # 4. final model on all training data, threshold that maximizes training F1
     w = train(y_train, A)
@@ -39,7 +42,9 @@ def main():
     # 5. predict and write the submission
     y_pred = predict(B, w, t)
     create_csv_submission(test_ids, y_pred, "submission.csv")
-    print(f"submission.csv written: {len(y_pred)} predictions, {np.mean(y_pred == 1):.1%} positive")
+    print(
+        f"submission.csv written: {len(y_pred)} predictions, {np.mean(y_pred == 1):.1%} positive"
+    )
 
 
 if __name__ == "__main__":
